@@ -52,7 +52,8 @@ echo.
 echo === [2/3] ssh 到服务器拉代码 ===
 echo.
 
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL %SERVER% "cd /opt/double-jump && git config core.filemode false && git pull --rebase" 1>&2
+REM 丢弃服务器侧残留的本地改动（人工 scp / 调试残留），强制跟 origin/main 对齐
+ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL %SERVER% "cd /opt/double-jump && git config core.filemode false && git checkout -- . 2>nul && git clean -fd 2>nul && git fetch origin && git reset --hard origin/main" 1>&2
 if errorlevel 1 (
   echo 服务器 git pull 失败
   exit /b 1

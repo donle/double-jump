@@ -42,8 +42,13 @@ echo
 echo "=== [2/3] ssh 到服务器拉代码 ==="
 echo
 
+# 丢弃服务器侧残留的本地改动（来自人工 scp / 调试），强制跟 origin/main 对齐
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL "$SERVER" \
-  "cd /opt/double-jump && git config core.filemode false && git pull --rebase"
+  "cd /opt/double-jump && git config core.filemode false && \
+   git checkout -- . 2>/dev/null || true && \
+   git clean -fd 2>/dev/null || true && \
+   git fetch origin && \
+   git reset --hard origin/main"
 
 echo
 echo "=== [3/3] 服务器构建 + 重启容器 ==="
