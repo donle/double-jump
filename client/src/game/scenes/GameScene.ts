@@ -54,7 +54,6 @@ export class GameScene extends Phaser.Scene {
   private lastSnapshotSentAt = 0;
   private lastAppliedSnapshotSeq = -1;
   private lastHostResult: LastResult | null = null;
-  private settingsButton: Phaser.GameObjects.Text | null = null;
   private settingsPanel: Phaser.GameObjects.Container | null = null;
   private settingsOverlay: Phaser.GameObjects.Rectangle | null = null;
   private settingsStatusText: Phaser.GameObjects.Text | null = null;
@@ -170,7 +169,7 @@ export class GameScene extends Phaser.Scene {
     // M4-B #59：全屏 pointerdown/up 转发到 inputManager.triggerJump。
     // GamepadView 不再持有 hit area（按钮变纯视觉），点屏任何位置都触发 jump。
     // pointerupoutside：用户拖出窗口外也正确收到"松开"，避免 jumpDown 卡 true。
-    this.input.on('pointerdown', () => this.handleGamePointerDown());
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => this.handleGamePointerDown(pointer));
     this.input.on('pointerup', () => this.handleGamePointerUp());
     this.input.on('pointerupoutside', () => this.handleGamePointerUp());
 
@@ -233,7 +232,7 @@ export class GameScene extends Phaser.Scene {
     this.restartKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.R);
     this.restartKey.on('down', () => this.restartGame());
 
-    this.settingsButton = this.add
+    this.add
       .text(22, 20, '设置', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '18px',
@@ -244,11 +243,6 @@ export class GameScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(2600)
       .setInteractive({ useHandCursor: true });
-    this.settingsButton.on('pointerdown', (_pointer: unknown, _x: number, _y: number, event?: { stopPropagation: () => void }) => {
-      this.blockGamePointerInput();
-      event?.stopPropagation();
-      this.toggleSettingsPanel();
-    });
 
     this.unsubscribeNetState = netClient.onState(() => this.updateSettingsStatus());
     this.unsubscribeNetStart = netClient.onStart(() => {
@@ -417,7 +411,17 @@ export class GameScene extends Phaser.Scene {
     };
   }
 
-  private handleGamePointerDown(): void {
+  private handleGamePointerDown(pointer: Phaser.Input.Pointer): void {
+    if (this.settingsPanel) {
+      this.blockGamePointerInput();
+      this.handleSettingsPanelPointer(pointer.x, pointer.y);
+      return;
+    }
+    if (this.isSettingsButtonPointer(pointer.x, pointer.y)) {
+      this.blockGamePointerInput();
+      this.showSettingsPanel();
+      return;
+    }
     if (this.isGamePointerInputBlocked()) {
       this.inputManager.triggerJump(false);
       return;
@@ -442,12 +446,28 @@ export class GameScene extends Phaser.Scene {
     return this.settingsPanel !== null || this.time.now <= this.gamePointerBlockedUntil;
   }
 
-  private toggleSettingsPanel(): void {
-    if (this.settingsPanel) {
-      this.closeSettingsPanel();
+  private isSettingsButtonPointer(x: number, y: number): boolean {
+    return x >= 16 && x <= 94 && y >= 12 && y <= 58;
+  }
+
+  private handleSettingsPanelPointer(x: number, y: number): void {
+    const cx = this.scale.width / 2;
+    const cy = 190;
+    if (this.isPointInRect(x, y, cx, cy + 12, 230, 54)) {
+      this.requestRestartFromSettings();
       return;
     }
-    this.showSettingsPanel();
+    if (this.isPointInRect(x, y, cx, cy + 78, 230, 54)) {
+      this.exitGameFromSettings();
+      return;
+    }
+    if (this.isPointInRect(x, y, cx, cy + 128, 120, 42)) {
+      this.closeSettingsPanel();
+    }
+  }
+
+  private isPointInRect(x: number, y: number, cx: number, cy: number, w: number, h: number): boolean {
+    return x >= cx - w / 2 && x <= cx + w / 2 && y >= cy - h / 2 && y <= cy + h / 2;
   }
 
   private closeSettingsPanel(): void {
@@ -468,16 +488,7 @@ export class GameScene extends Phaser.Scene {
     this.settingsOverlay = this.add
       .rectangle(W / 2, H / 2, W, H, 0x000000, 0.001)
       .setScrollFactor(0)
-      .setDepth(2990)
-      .setInteractive();
-    this.settingsOverlay.on('pointerdown', (_pointer: unknown, _x: number, _y: number, event?: { stopPropagation: () => void }) => {
-      this.blockGamePointerInput();
-      event?.stopPropagation();
-    });
-    this.settingsOverlay.on('pointerup', (_pointer: unknown, _x: number, _y: number, event?: { stopPropagation: () => void }) => {
-      this.blockGamePointerInput();
-      event?.stopPropagation();
-    });
+      .setDepth(2990);
     const panel = this.add.container(cx, cy).setScrollFactor(0).setDepth(3000);
     panel.add(this.add.rectangle(0, 0, 360, 300, 0x0f1020, 0.96).setStrokeStyle(2, 0xffffff, 0.85));
     panel.add(this.add.text(0, -112, '设置', {
@@ -504,11 +515,6 @@ export class GameScene extends Phaser.Scene {
       color: '#000000',
       fontStyle: 'bold',
     }).setOrigin(0.5);
-    restartBtn.on('pointerdown', (_pointer: unknown, _x: number, _y: number, event?: { stopPropagation: () => void }) => {
-      this.blockGamePointerInput();
-      event?.stopPropagation();
-      this.requestRestartFromSettings();
-    });
     panel.add([restartBtn, restartText]);
 
     const exitBtn = this.add.rectangle(0, 78, 230, 54, 0xf72585, 1)
@@ -520,11 +526,6 @@ export class GameScene extends Phaser.Scene {
       color: '#ffffff',
       fontStyle: 'bold',
     }).setOrigin(0.5);
-    exitBtn.on('pointerdown', (_pointer: unknown, _x: number, _y: number, event?: { stopPropagation: () => void }) => {
-      this.blockGamePointerInput();
-      event?.stopPropagation();
-      this.exitGameFromSettings();
-    });
     panel.add([exitBtn, exitText]);
 
     const closeBtn = this.add.text(0, 128, '关闭', {
@@ -532,11 +533,6 @@ export class GameScene extends Phaser.Scene {
       fontSize: '16px',
       color: '#aaaaaa',
     }).setOrigin(0.5).setInteractive({ useHandCursor: true });
-    closeBtn.on('pointerdown', (_pointer: unknown, _x: number, _y: number, event?: { stopPropagation: () => void }) => {
-      this.blockGamePointerInput();
-      event?.stopPropagation();
-      this.closeSettingsPanel();
-    });
     panel.add(closeBtn);
 
     this.settingsPanel = panel;

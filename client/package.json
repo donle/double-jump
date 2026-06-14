@@ -7,18 +7,22 @@
     "dev": "vite --host 0.0.0.0 --strictPort",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:e2e": "pnpm build && playwright test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "phaser": "^3.80.1",
-    "matter-js": "^0.20.0"
+    "matter-js": "^0.20.0",
+    "phaser": "^3.80.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@types/matter-js": "^0.20.0",
     "typescript": "^5.4.5",
     "vite": "^5.2.11"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

@@ -36,6 +36,10 @@ Thumbs.db
 
 # Test / coverage
 coverage/
+test-results/
+client/test-results/
+playwright-report/
+client/playwright-report/
 *.lcov
 
 # Misc
