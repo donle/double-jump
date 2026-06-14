@@ -204,3 +204,115 @@ docker system prune -af        # 清掉所有不用了的镜像/容器/网络
 - [ ] `.env` 不要进 git（已在 `.gitignore`）
 - [ ] GitHub Personal Access Token 不用开太宽权限
 - [ ] 服务器定期 `apt update && apt upgrade`
+
+---
+
+## 6. IP 模式（无域名 / 仅 HTTP）
+
+适合**临时演示 / 内网测试 / 不想搞备案**。Caddy 监听 `:80` 直接反代，不申请证书。
+
+`/etc/caddy/Caddyfile`：
+
+```
+:80 {
+    bind 0.0.0.0
+    reverse_proxy 127.0.0.1:3000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+    }
+    encode zstd gzip
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}
+```
+
+> 注意：浏览器会把 `http://IP` 标记为"不安全"，但功能完全正常。游戏走 WebSocket 用 `ws://` 不会被拒。
+
+---
+
+## 7. 京东云 + CentOS 7 部署踩坑（2026-06 实测）
+
+### 7.1 京东云默认实例是 CentOS 7（已 EOL），默认 yum 源是死的
+
+实际可用的源：
+- `vault.centos.org`（官方 archive，可达但慢）
+- 阿里云镜像（推荐）
+
+**`curl get.docker.com | sh` 能跑**（它走的是 `download.docker.com`，独立源）。所以 Docker 装得上。
+
+### 7.2 `docker pull` 拉 docker.io 镜像超时
+
+京东云出口网络到 docker.io 慢 / 不稳。配 mirror：
+
+```bash
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json <<EOF
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://hub-mirror.c.163.com",
+    "https://docker.mirrors.ustc.edu.cn"
+  ],
+  "max-concurrent-downloads": 5
+}
+EOF
+systemctl restart docker
+docker pull hello-world   # 验证
+```
+
+### 7.3 Caddy 不在默认源，要手动装
+
+CentOS 7 装 Caddy 最稳的姿势：直接拉 GitHub release 的静态二进制，**不要走 yum**（caddy 的 yum 源认证方式经常变）：
+
+```bash
+curl -sSLf -o /tmp/caddy.tar.gz \
+  "https://github.com/caddyserver/caddy/releases/download/v2.8.4/caddy_2.8.4_linux_amd64.tar.gz"
+tar -xzf /tmp/caddy.tar.gz caddy -C /usr/local/bin
+chmod +x /usr/local/bin/caddy
+/usr/local/bin/caddy version
+```
+
+systemd unit 文件见本仓库部署记录，或直接用我提供的版本（`/etc/systemd/system/caddy.service`，已固化在 deploy.sh 的姊妹脚本里）。
+
+### 7.4 京东云控制台重置 root 密码后必须**重启实例才生效**
+
+控制台点击"重置密码" → OpenSSH 不重读 shadow，必须走控制台"重启"按钮。
+Workbench（VNC）进去是已经登录好的 root 终端，不需要密码。
+
+### 7.5 pnpm 10 + Docker build 的两个坑
+
+**(a) `pnpm install` 内部 `EPERM: operation not permitted, write`**
+
+pnpm 10 在安装后写工作区元数据时（与 pnpm-workspace.yaml / packageManager 字段交互），在 Docker 内偶尔 EPERM，**没有具体路径**。绕过方式：
+
+```dockerfile
+RUN pnpm install --no-lockfile --filter double-jump-client... \
+    --config.strict-dep-builds=false --ignore-scripts
+# 然后手动跑 esbuild 的 install.js（vite 依赖 esbuild 二进制）
+RUN cd /build/node_modules/.pnpm/esbuild@*/node_modules/esbuild && node install.js
+```
+
+**(b) `packageManager` 字段会触发 pnpm 内部 `pnpm add pnpm@X.Y.Z` 自举**
+
+`package.json` 里写了 `"packageManager": "pnpm@10.x.x"` 的话，pnpm install 会**先 add 自己的指定版本到工程**（又一次 EPERM）。**删掉这个字段**。
+
+### 7.6 根 `package.json` 是 pnpm 10 workspace 的硬性要求
+
+pnpm 10 严格模式：`pnpm-workspace.yaml` 声明了 `packages: [client, server, shared]`，**根目录就必须有 `package.json`**（哪怕只有 `{"name": "..."}`）。否则 `--frozen-lockfile` 会报 lockfile 跟 package.json 不一致。
+
+### 7.7 运行时镜像要把 `node_modules` 搬过去
+
+pnpm 的 store / node_modules 在 workspace 根（`/build/node_modules`），不会自动跟 `/app/server` 一起到 runtime。`Dockerfile` 的 stage 3 必须显式 COPY。
+
+### 7.8 SSH 私钥如果已经泄漏（贴在聊天 / commit 进 git），立即作废
+
+1. 在新机器上生成新密钥对
+2. 把新公钥加到服务器 `~/.ssh/authorized_keys`
+3. 服务器 `passwd -l root`（shadow 加 `!!`）
+4. `/etc/ssh/sshd_config` 设 `PasswordAuthentication no` + `PermitRootLogin prohibit-password`
+5. `systemctl restart sshd`
+6. 京东云控制台如果能"重新生成密钥对"，一并用上
