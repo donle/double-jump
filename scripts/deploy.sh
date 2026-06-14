@@ -118,8 +118,8 @@ if find "$STAGE" -mindepth 1 \( -name '..' -o -name '*../*' \) -print -quit | gr
   echo "tarball contains '..' path components, refusing" >&2; exit 1
 fi
 
-# 拒任何绝对路径（兜底 -C 行为）
-if find "$STAGE" -mindepth 1 -printf '%p\n' | grep -E '^/'; then
+# 拒任何绝对路径（兜底 -C 行为。用 %P 输出相对 STAGE 的路径，避免误报 STAGE 本身）
+if find "$STAGE" -mindepth 1 -printf '%P\n' | grep -E '^/'; then
   echo "tarball contains absolute paths, refusing" >&2; exit 1
 fi
 
