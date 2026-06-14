@@ -207,30 +207,72 @@ docker system prune -af        # 清掉所有不用了的镜像/容器/网络
 
 ---
 
-## 6. IP 模式（无域名 / 仅 HTTP）
+## 6. IP 模式（无域名）
 
-适合**临时演示 / 内网测试 / 不想搞备案**。Caddy 监听 `:80` 直接反代，不申请证书。
+适合**临时演示 / 内网测试 / 不想搞备案**。
 
-`/etc/caddy/Caddyfile`：
+### 6.1 现状（2026-06）
+
+Caddy 同时监听 80 和 443。443 用自签名证书（10 年），处理 Chrome "Always use secure connections" 强制 https 的情况。80 走纯 HTTP，**不强制跳转**——给用户选择权。
 
 ```
+# /etc/caddy/Caddyfile
+
 :80 {
     bind 0.0.0.0
-    reverse_proxy 127.0.0.1:3000 {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-    }
+    reverse_proxy 127.0.0.1:3000 { ... }
     encode zstd gzip
-    log {
-        output file /var/log/caddy/access.log {
-            roll_size 10mb
-            roll_keep 5
-        }
-    }
+    log { ... }
+}
+
+:443 {
+    bind 0.0.0.0
+    tls /etc/caddy/tls/117.72.204.51.crt /etc/caddy/tls/117.72.204.51.key
+    reverse_proxy 127.0.0.1:3000 { ... }
+    encode zstd gzip
+    log { ... }
 }
 ```
 
-> 注意：浏览器会把 `http://IP` 标记为"不安全"，但功能完全正常。游戏走 WebSocket 用 `ws://` 不会被拒。
+### 6.2 自签名证书生成（IP 直连唯一方案）
+
+公共 CA 不给裸 IP 签证书，所以必须自签。**浏览器会弹一次"您的连接不是私密连接"**，是 IP 自签站的固有限制，无法避免。
+
+```bash
+mkdir -p /etc/caddy/tls
+openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+  -keyout /etc/caddy/tls/117.72.204.51.key \
+  -out /etc/caddy/tls/117.72.204.51.crt \
+  -subj '/CN=117.72.204.51'
+chown -R caddy:caddy /etc/caddy/tls
+chmod 600 /etc/caddy/tls/*.key
+chmod 644 /etc/caddy/tls/*.crt
+```
+
+替换 `117.72.204.51` 为你实际 IP 即可。
+
+### 6.3 用户访问选项
+
+| 方式 | 体验 |
+|---|---|
+| `http://117.72.204.51/` | 无警告，但 Chrome 如果开了 "Always use secure connections" 会强升 https |
+| `https://117.72.204.51/` | 首次弹"连接不是私密连接"，点"高级"→"继续前往" |
+
+**用户视角的友好建议**：在 Chrome 地址栏输入 `http://117.72.204.51/`，碰到强升 https 时点一次"继续前往"，之后浏览器会记住。WebSocket 走 `wss://` 不受影响。
+
+### 6.4 如果有域名（最优路径）
+
+把 §6.1 整个替换为：
+
+```
+your.domain.com {
+    reverse_proxy 127.0.0.1:3000 { ... }
+    encode zstd gzip
+    log { ... }
+}
+```
+
+Caddy 会自动从 Let's Encrypt 申请证书，全 https 无警告。前提：域名解析到 IP + 80/443 放通 + 国内服务器域名已 ICP 备案。
 
 ---
 
