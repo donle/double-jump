@@ -55,7 +55,7 @@ export class HomeScene extends Phaser.Scene {
       .setStrokeStyle(2, 0xffffff, 0.9)
       .setInteractive({ useHandCursor: true });
     this.add
-      .text(cx, cy + 80, '▶ 开始', {
+      .text(cx, cy + 80, '单机模式', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '28px',
         color: '#000000',
@@ -125,7 +125,7 @@ export class HomeScene extends Phaser.Scene {
 
   private goToRoom(): void {
     if (netClient.isOnline()) netClient.leaveRoom();
-    this.scene.start('RoomScene');
+    this.scene.start('RoomScene', { mode: 'single' });
   }
 
   private goToOnlineCreate(): void {

@@ -5,7 +5,7 @@ import type { Difficulty, LevelId } from '../types';
 import { netClient } from '../../net/NetClient';
 
 interface RoomSceneData {
-  mode?: 'onlineCreate';
+  mode?: 'single' | 'onlineCreate';
 }
 
 /**
@@ -30,6 +30,7 @@ export class RoomScene extends Phaser.Scene {
   private onlineStartText: Phaser.GameObjects.Text | null = null;
   private unsubscribeNetState: (() => void) | null = null;
   private unsubscribeNetStart: (() => void) | null = null;
+  private singleMode = false;
   private onlineCreateMode = false;
   private creatingOnlineRoom = false;
 
@@ -38,6 +39,7 @@ export class RoomScene extends Phaser.Scene {
   }
 
   init(data?: RoomSceneData): void {
+    this.singleMode = data?.mode === 'single';
     this.onlineCreateMode = data?.mode === 'onlineCreate';
   }
 
@@ -51,7 +53,11 @@ export class RoomScene extends Phaser.Scene {
     this.levelCards = [];
     this.creatingOnlineRoom = false;
 
-    if (netClient.isOnline()) {
+    if (this.singleMode && netClient.isOnline()) {
+      netClient.leaveRoom();
+    }
+
+    if (!this.singleMode && netClient.isOnline()) {
       this.buildOnlineRoom();
       return;
     }
@@ -74,7 +80,7 @@ export class RoomScene extends Phaser.Scene {
       .on('pointerdown', () => this.scene.start('HomeScene'));
 
     this.add
-      .text(cx, H * 0.16, this.onlineCreateMode ? '创建联机房间' : '选择关卡', {
+      .text(cx, H * 0.16, this.onlineCreateMode ? '创建联机房间' : '单机模式', {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '38px',
         color: '#f72585',

@@ -13,6 +13,9 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 # 再拷子包。client 引用 shared/ 下的源码（没有 package.json，直接相对路径 import）
 COPY client/ ./client/
 COPY shared/ ./shared/
+# vite.config.ts 的 publicDir 是 '../assets'（指向仓库根的 assets/，里面是
+# 游戏素材 PNG：背景图、玩家立绘），这一行是必须的，否则 dist/ 里没有图
+COPY assets/ ./assets/
 # 整 workspace 一起 install（pnpm 10 严格要求 workspace 根有 package.json）
 # --filter 只装 client 的依赖，跳过 server
 ENV PNPM_HOME=/pnpm

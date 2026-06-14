@@ -52,11 +52,11 @@ tmp/
 .superpowers/
 .playwright-mcp/
 
-# 截图 / 调试图
-*.png
-!docs/**/*.png
-!assets/**/*.png
-!client/public/**/*.png
+# 截图 / 调试图（不进镜像）
+# 2026-06 教训：之前 `*.png` + `!client/public/**/*.png` 的 negation 在 Docker buildkit 里
+# 对 `**` 嵌套路径不生效，导致 client/public/assets/imagegen/*.png（游戏素材）全被排除。
+# 干脆把 `*.png` 整行去掉 —— 那些素材是必须进镜像的。
+# 真正需要排除的截图/调试图在 `tmp/` 和 `.playwright-mcp/` 里，已经在上面单独排过了。
 
 # 大型文档/规格
 docs/superpowers/
