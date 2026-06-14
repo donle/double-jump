@@ -20,6 +20,10 @@ COPY assets/ ./assets/
 # --filter 只装 client 的依赖，跳过 server
 ENV PNPM_HOME=/pnpm
 ENV PATH=/pnpm:$PATH
+# 京东云 2GB 内存 + 容器内可用更少。Node 默认 1.5GB heap 在 vite build 时
+# 会 OOM。这里把 build 阶段所有 Node 进程的 heap 限到 1GB，足够 vite + esbuild
+# 同时跑。
+ENV NODE_OPTIONS=--max-old-space-size=1024
 RUN corepack enable && corepack prepare pnpm@10.34.3 --activate
 # 试 --no-lockfile 跳过 lockfile 写，看 EPERM 是不是 lockfile 写入
 RUN pnpm install --no-lockfile --filter double-jump-client... --config.strict-dep-builds=false --ignore-scripts 2>&1 | tail -20
@@ -38,6 +42,7 @@ COPY shared/ ./shared/
 # 显式把 store 放到 /tmp/pnpm-store，避开默认路径的写权限问题
 ENV PNPM_HOME=/tmp/pnpm-home
 ENV PNPM_STORE_DIR=/tmp/pnpm-store
+ENV NODE_OPTIONS=--max-old-space-size=1024
 RUN pnpm install --no-lockfile --filter double-jump-server... --config.strict-dep-builds=false --ignore-scripts 2>&1 | tail -10
 
 # ---------- Stage 3: 运行时 ----------
