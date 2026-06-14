@@ -106,13 +106,21 @@ chmod 700 "$STAGE"
 url=$(printf 'https://codeload.github.com/%s/tar.gz/refs/heads/%s' "$REPO" "$BRANCH")
 curl -sSLf -o "$STAGE/repo.tar.gz" "$url"
 
-# ---- 安全解压：拒 owner 转移、拒 ACL/xattr、拒绝对路径 ----
+# ---- 安全解压：拒 owner 转移、拒 ACL/xattr ----
+# 注：tar 1.28+ 支持 --no-absolute-names，但 CentOS 7 自带 1.26 不认。
+# 不过 -C 指定目标目录时，tar 默认就会剥掉绝对路径前缀（PaxHeader 中的
+# 'pax_global_header' 也被 --no-acls 等一同压制），所以这里靠 find 做后置检查。
 tar --no-same-owner --no-same-permissions --no-acls --no-xattrs \
-    --no-absolute-names -xzf "$STAGE/repo.tar.gz" -C "$STAGE" --strip-components=1
+    -xzf "$STAGE/repo.tar.gz" -C "$STAGE" --strip-components=1
 
 # 拒残留的 '..' 路径
 if find "$STAGE" -mindepth 1 \( -name '..' -o -name '*../*' \) -print -quit | grep -q .; then
   echo "tarball contains '..' path components, refusing" >&2; exit 1
+fi
+
+# 拒任何绝对路径（兜底 -C 行为）
+if find "$STAGE" -mindepth 1 -printf '%p\n' | grep -E '^/'; then
+  echo "tarball contains absolute paths, refusing" >&2; exit 1
 fi
 
 # 拒越界 symlink

@@ -112,13 +112,18 @@ chmod 700 "$STAGE"
 url=$(printf 'https://codeload.github.com/%s/tar.gz/refs/heads/%s' "$REPO" "$BRANCH")
 curl -sSLf -o "$STAGE/repo.tar.gz" "$url"
 
-# 安全解压
+# 安全解压（CentOS 7 tar 1.26 不认 --no-absolute-names，靠 -C + find 兜底）
 tar --no-same-owner --no-same-permissions --no-acls --no-xattrs \
-    --no-absolute-names -xzf "$STAGE/repo.tar.gz" -C "$STAGE" --strip-components=1
+    -xzf "$STAGE/repo.tar.gz" -C "$STAGE" --strip-components=1
 
 # 拒 .. 路径
 if find "$STAGE" -mindepth 1 \( -name '..' -o -name '*../*' \) -print -quit | grep -q .; then
   echo "tarball contains '..' path components, refusing" >&2; exit 1
+fi
+
+# 拒绝对路径
+if find "$STAGE" -mindepth 1 -printf '%p\n' | grep -E '^/'; then
+  echo "tarball contains absolute paths, refusing" >&2; exit 1
 fi
 
 # 拒越界 symlink
