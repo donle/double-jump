@@ -1,0 +1,21 @@
+{
+  "name": "double-jump-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --import tsx src/index.ts",
+    "start": "node --import tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.17.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.2",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.15.7",
+    "typescript": "^5.4.5"
+  }
+}

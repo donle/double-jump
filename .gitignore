@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Vite / cache
+.vite/
+.cache/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Test / coverage
+coverage/
+*.lcov
+
+# Misc
+*.pid
+*.seed
+*.pid.lock
+
+# 开发工具/调试痕迹（不进仓库）
+.claude/
+.superpowers/
+.playwright-mcp/
+tmp/
+
+# 截图/调试图
+*.png
+!docs/**/*.png
+!assets/**/*.png
+!client/public/**/*.png
+!client/src/**/*.png
+!shared/**/*.png
+
+# 规格/计划文档（不进仓库，但保留在 docs/REQUIREMENTS.md 等真文档）
+docs/superpowers/
+

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="双人跳">
+  <rect width="512" height="512" rx="112" fill="#080912"/>
+  <circle cx="188" cy="205" r="66" fill="#f72585"/>
+  <circle cx="326" cy="282" r="66" fill="#06d6a0"/>
+  <path d="M237 215c42 5 62 19 80 47" fill="none" stroke="#ffe066" stroke-width="22" stroke-linecap="round"/>
+  <path d="M162 339c70 50 164 50 235 0" fill="none" stroke="#ffffff" stroke-opacity=".9" stroke-width="18" stroke-linecap="round"/>
+  <path d="M330 104v82m0-82 38 38m-38-38-38 38" fill="none" stroke="#ffe066" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

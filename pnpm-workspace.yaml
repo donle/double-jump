@@ -1,0 +1,12 @@
+packages:
+  - client
+  - server
+  - shared
+
+allowBuilds:
+  esbuild: true
+
+# pnpm 10+ 安全：只允许这些依赖运行 install 脚本（postinstall 之类）。
+# 没列出的会被视为 "ignored build scripts" 拦下。
+onlyBuiltDependencies:
+  - esbuild

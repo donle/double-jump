@@ -1,0 +1,62 @@
+# Node / pnpm
+node_modules/
+.pnpm-store/
+.pnp.*
+
+# 构建产物（容器内会重新构建）
+**/dist/
+**/build/
+**/out/
+*.tsbuildinfo
+
+# Vite / 缓存
+.vite/
+.cache/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 测试 / 覆盖率
+coverage/
+*.lcov
+
+# 日志
+*.log
+logs/
+
+# 环境变量（含密钥）
+.env
+.env.local
+.env.*.local
+
+# 临时文件
+tmp/
+*.pid
+*.seed
+*.pid.lock
+
+# Claude / 工具配置（不进镜像）
+.claude/
+.superpowers/
+.playwright-mcp/
+
+# 截图 / 调试图
+*.png
+!docs/**/*.png
+!assets/**/*.png
+!client/public/**/*.png
+
+# 大型文档/规格
+docs/superpowers/

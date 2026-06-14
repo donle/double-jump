@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 180" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="nearHillE" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0a1f0e"/>
+      <stop offset="100%" stop-color="#050a05"/>
+    </linearGradient>
+  </defs>
+  <path d="M 0 145 L 30 130 L 60 138 L 100 122 L 140 132 L 180 118 L 220 130 L 260 120 L 300 132 L 300 180 L 0 180 Z" fill="url(#nearHillE)"/>
+  <path d="M 0 145 L 30 130 L 60 138 L 100 122 L 140 132 L 180 118 L 220 130 L 260 120 L 300 132" fill="none" stroke="#1a3a22" stroke-width="0.8" opacity="0.5"/>
+</svg>
