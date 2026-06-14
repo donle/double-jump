@@ -18,6 +18,8 @@ REM
 REM 安全：
 REM   - 用 StrictHostKeyChecking=accept-new（不是 no）。首次会接受并存到
 REM     known_hosts，之后服务器密钥变了会拒接，避免 MITM。
+REM   - 远程 tarball 解压用安全 flag（拒 .. 路径、拒越界 symlink）。
+REM   - .env 备份走 mktemp + 600 + trap，结束即清。
 REM
 REM 关于"为什么不用 git pull"：
 REM   - 京东云（以及大多数中国云）出口到 github.com 经常被墙 / 抖动
@@ -38,6 +40,17 @@ set "KNOWN_HOSTS=%USERPROFILE%\.ssh\known_hosts"
 
 set "MSG=%~1"
 if "%MSG%"=="" set "MSG=deploy: update"
+
+REM 早期校验 REPO/BRANCH 形态（防命令注入）。
+REM /V 翻转：只接受 ^[A-Za-z0-9._/-]+$ —— 含其它字符或为空都被拒
+echo %REPO% | findstr /R /V "^[A-Za-z0-9._/-]\{1,\}$" >nul && (
+  echo bad REPO: %REPO%
+  exit /b 1
+)
+echo %BRANCH% | findstr /R /V "^[A-Za-z0-9._/-]\{1,\}$" >nul && (
+  echo bad BRANCH: %BRANCH%
+  exit /b 1
+)
 
 echo.
 echo === [1/3] git commit + push ===
@@ -67,8 +80,75 @@ echo === [2/3] ssh 到服务器拉 tarball ===
 echo.
 
 REM 服务器走 codeload.github.com（CDN，国内能通）拉 tarball
-REM 保留 .env —— 其他覆盖
-ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="%KNOWN_HOSTS%" %SERVER% "DEPLOY_DIR=/opt/double-jump; ENV_FILE=\$DEPLOY_DIR/.env; cp \$ENV_FILE /tmp/.env.bak 2>/dev/null; rm -rf \$DEPLOY_DIR/* \$DEPLOY_DIR/.[!.]* 2>/dev/null; curl -sSLf -o /tmp/repo.tar.gz \"https://codeload.github.com/%REPO%/tar.gz/refs/heads/%BRANCH%\" && tar -xzf /tmp/repo.tar.gz -C \$DEPLOY_DIR --strip-components=1 && rm /tmp/repo.tar.gz; mv /tmp/.env.bak \$ENV_FILE 2>/dev/null; chmod +x \$DEPLOY_DIR/deploy.sh; echo 拉取完成（%REPO% @ %BRANCH%）" 1>&2
+REM 私有 .env 备份 + 安全解压 + 越界 symlink 拒绝 + 原子覆盖
+REM 全部逻辑封装在远程 bash heredoc，避免本地 shell 解释任何变量。
+ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="%KNOWN_HOSTS%" %SERVER% "bash -s -- '%REPO%' '%BRANCH%'" 1>&2 <<'REMOTE'
+set -euo pipefail
+
+REPO="$1"
+BRANCH="$2"
+DEPLOY_DIR="/opt/double-jump"
+ENV_FILE="$DEPLOY_DIR/.env"
+
+# ---- 二次校验 ----
+case "$REPO" in ''|*[!A-Za-z0-9._-]*/*[!A-Za-z0-9._-]*) echo "bad REPO: '$REPO'" >&2; exit 1 ;; esac
+case "$BRANCH" in ''|*[!A-Za-z0-9._/-]*) echo "bad BRANCH: '$BRANCH'" >&2; exit 1 ;; esac
+
+# ---- 私有 .env 备份 ----
+BACKUP=""
+cleanup() { [ -n "${BACKUP:-}" ] && [ -f "$BACKUP" ] && rm -f "$BACKUP" || true; }
+trap cleanup EXIT
+if [ -f "$ENV_FILE" ]; then
+  BACKUP=$(mktemp /root/.env.bak.XXXXXX) || { echo "mktemp failed" >&2; exit 1; }
+  chmod 600 "$BACKUP"
+  cp -p "$ENV_FILE" "$BACKUP"
+fi
+
+# ---- 暂存目录 ----
+STAGE=$(mktemp -d /root/dj-stage.XXXXXX) || { echo "mktemp -d failed" >&2; exit 1; }
+chmod 700 "$STAGE"
+
+# 下载（printf 显式 %s 拼接）
+url=$(printf 'https://codeload.github.com/%s/tar.gz/refs/heads/%s' "$REPO" "$BRANCH")
+curl -sSLf -o "$STAGE/repo.tar.gz" "$url"
+
+# 安全解压
+tar --no-same-owner --no-same-permissions --no-acls --no-xattrs \
+    --no-absolute-names -xzf "$STAGE/repo.tar.gz" -C "$STAGE" --strip-components=1
+
+# 拒 .. 路径
+if find "$STAGE" -mindepth 1 \( -name '..' -o -name '*../*' \) -print -quit | grep -q .; then
+  echo "tarball contains '..' path components, refusing" >&2; exit 1
+fi
+
+# 拒越界 symlink
+badlink=$(find "$STAGE" -type l -printf '%l\n' | grep -E '^/|\.\./' || true)
+if [ -n "$badlink" ]; then
+  echo "tarball contains escaping symlinks: $badlink" >&2; exit 1
+fi
+
+rm -f "$STAGE/repo.tar.gz"
+
+# 原子覆盖 DEPLOY_DIR（保留 .env）
+mkdir -p "$DEPLOY_DIR"
+find "$DEPLOY_DIR" -mindepth 1 -maxdepth 1 ! -name '.env' -exec rm -rf {} +
+cp -a "$STAGE"/. "$DEPLOY_DIR"/
+
+# 恢复 .env
+if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then
+  cp -p "$BACKUP" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+fi
+
+chmod +x "$DEPLOY_DIR/deploy.sh"
+
+rm -rf "$STAGE"
+cleanup
+trap - EXIT
+
+echo "拉取完成（$REPO @ $BRANCH）"
+REMOTE
+
 if errorlevel 1 (
   echo 服务器拉代码失败
   exit /b 1
