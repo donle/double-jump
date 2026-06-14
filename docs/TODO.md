@@ -167,6 +167,7 @@
 | 91 | ✅ | 联机过关自动进入下一关 | 新增 `advance_level` 协议；联机胜利且还有下一关时，房主短暂停留结算页后请求服务器推进关卡，服务器广播 `game_started`，两端直接进入下一关；第三关通关或失败仍返回房间。验证：client tsc、server typecheck、vite build、双客户端 WebSocket 探针通过。 |
 | 92 | ✅ | 前端和 WebSocket 合并到单端口服务 | `server/src/index.ts` 改为同一个 Node HTTP server 同时托管 `client/dist` 静态文件和 WebSocket；客户端默认 WS 地址在合并服务下使用当前 `host`，Vite 开发时仍回退到 `8787`。当前只需访问 `http://192.168.2.124:8787/`，不再需要单独运行 `5173`。验证：client tsc、server typecheck、vite build、HTTP 200、WS welcome 通过。 |
 | 93 | ✅ | PWA 支持：manifest、图标、service worker 缓存 | 新增 `manifest.webmanifest`、`sw.js`、192/512/maskable 图标与 service worker 注册；缓存首页、构建 JS、角色/背景图片，支持安装到桌面与离线打开单机资源。服务端补齐 `.webmanifest` MIME 与 `sw.js` no-cache。验证：client tsc、vite build、manifest/sw HTTP 200 与响应头通过。 |
+| 94 | ✅ | 设置面板退出游戏 + 单机重开清理 | GameScene 设置面板新增“退出游戏”。单机退出直接回主页；联机退出发送 `disband_room`，服务端通知双方 `room_closed` 并删除房间，客户端全局强制回主页。单机重开前销毁旧输入设备、关闭设置面板并停止 EndScene，避免输入/结算残留。验证：client tsc、server typecheck、vite build、双客户端 disband 探针通过。 |
 
 ### 方向 B：单机打磨
 - 主页 / 房间页 / 结束页

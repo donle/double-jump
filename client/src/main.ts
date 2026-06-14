@@ -7,6 +7,7 @@ import { GAME_CONFIG } from './game/config';
 import { SoundManager } from './audio/SoundManager';
 import { createLevelRun } from './game/level/LevelRun';
 import { registerPwaServiceWorker } from './pwa';
+import { netClient } from './net/NetClient';
 
 /**
  * Phaser 启动入口。
@@ -54,3 +55,10 @@ function initRegistry(): void {
 }
 initRegistry();
 registerPwaServiceWorker();
+
+netClient.onRoomClosed(() => {
+  game.scene.stop('GameScene');
+  game.scene.stop('EndScene');
+  game.scene.stop('RoomScene');
+  game.scene.start('HomeScene');
+});

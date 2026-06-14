@@ -86,6 +86,7 @@ export class GameScene extends Phaser.Scene {
     this.restartKey?.removeAllListeners('down');
     this.matter.world.off('collisionstart');
     this.matter.world.off('collisionend');
+    this.inputManager?.destroy();
     this.unsubscribeNetState?.();
     this.unsubscribeNetStart?.();
     this.unsubscribeNetState = null;
@@ -103,6 +104,16 @@ export class GameScene extends Phaser.Scene {
     this.lastSnapshotSentAt = 0;
     this.lastAppliedSnapshotSeq = -1;
     this.lastHostResult = null;
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.inputManager?.destroy();
+      this.unsubscribeNetState?.();
+      this.unsubscribeNetStart?.();
+      this.unsubscribeNetState = null;
+      this.unsubscribeNetStart = null;
+      this.settingsPanel?.destroy(true);
+      this.settingsPanel = null;
+      this.settingsStatusText = null;
+    });
 
     // M4-B #6：先 destroy 旧 BackgroundScroller（scene.restart 场景），否则旧 3 个
     // Graphics 不会被释放、scene 里就会累积。
@@ -417,15 +428,15 @@ export class GameScene extends Phaser.Scene {
     const cx = W / 2;
     const cy = 190;
     const panel = this.add.container(cx, cy).setScrollFactor(0).setDepth(3000);
-    panel.add(this.add.rectangle(0, 0, 360, 230, 0x0f1020, 0.96).setStrokeStyle(2, 0xffffff, 0.85));
-    panel.add(this.add.text(0, -78, '设置', {
+    panel.add(this.add.rectangle(0, 0, 360, 300, 0x0f1020, 0.96).setStrokeStyle(2, 0xffffff, 0.85));
+    panel.add(this.add.text(0, -112, '设置', {
       fontFamily: 'system-ui, sans-serif',
       fontSize: '28px',
       color: '#ffffff',
       fontStyle: 'bold',
     }).setOrigin(0.5));
 
-    this.settingsStatusText = this.add.text(0, -30, '', {
+    this.settingsStatusText = this.add.text(0, -64, '', {
       fontFamily: 'system-ui, sans-serif',
       fontSize: '16px',
       color: '#cccccc',
@@ -433,10 +444,10 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5);
     panel.add(this.settingsStatusText);
 
-    const restartBtn = this.add.rectangle(0, 35, 230, 54, 0x06d6a0, 1)
+    const restartBtn = this.add.rectangle(0, 12, 230, 54, 0x06d6a0, 1)
       .setStrokeStyle(2, 0xffffff, 0.85)
       .setInteractive({ useHandCursor: true });
-    const restartText = this.add.text(0, 35, '重新开始', {
+    const restartText = this.add.text(0, 12, '重新开始', {
       fontFamily: 'system-ui, sans-serif',
       fontSize: '20px',
       color: '#000000',
@@ -448,7 +459,22 @@ export class GameScene extends Phaser.Scene {
     });
     panel.add([restartBtn, restartText]);
 
-    const closeBtn = this.add.text(0, 86, '关闭', {
+    const exitBtn = this.add.rectangle(0, 78, 230, 54, 0xf72585, 1)
+      .setStrokeStyle(2, 0xffffff, 0.85)
+      .setInteractive({ useHandCursor: true });
+    const exitText = this.add.text(0, 78, '退出游戏', {
+      fontFamily: 'system-ui, sans-serif',
+      fontSize: '20px',
+      color: '#ffffff',
+      fontStyle: 'bold',
+    }).setOrigin(0.5);
+    exitBtn.on('pointerdown', (_pointer: unknown, _x: number, _y: number, event: { stopPropagation: () => void }) => {
+      event.stopPropagation();
+      this.exitGameFromSettings();
+    });
+    panel.add([exitBtn, exitText]);
+
+    const closeBtn = this.add.text(0, 128, '关闭', {
       fontFamily: 'system-ui, sans-serif',
       fontSize: '16px',
       color: '#aaaaaa',
@@ -470,6 +496,16 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     this.restartGame();
+  }
+
+  private exitGameFromSettings(): void {
+    this.inputManager?.destroy();
+    if (netClient.isOnline()) {
+      netClient.disbandRoom();
+      return;
+    }
+    this.scene.stop('EndScene');
+    this.scene.start('HomeScene');
   }
 
   private updateSettingsStatus(): void {
@@ -576,6 +612,11 @@ export class GameScene extends Phaser.Scene {
   /** 重启入口：scene.restart()。R 键和 EndScene 的"再来一局"按钮都走这里。 */
   private restartGame(): void {
     Registry.regenerateLevelRun();
+    this.inputManager?.destroy();
+    this.settingsPanel?.destroy(true);
+    this.settingsPanel = null;
+    this.settingsStatusText = null;
+    this.scene.stop('EndScene');
     this.scene.restart();
   }
 

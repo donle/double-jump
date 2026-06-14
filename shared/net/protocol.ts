@@ -101,6 +101,9 @@ export type ClientToServerMessage =
       type: 'advance_level';
     }
   | {
+      type: 'disband_room';
+    }
+  | {
       type: 'leave_room';
     };
 
@@ -140,6 +143,11 @@ export type ServerToClientMessage =
     }
   | {
       type: 'room_left';
+    }
+  | {
+      type: 'room_closed';
+      reason: 'disbanded';
+      message: string;
     }
   | {
       type: 'error';

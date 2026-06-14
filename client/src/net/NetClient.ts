@@ -12,6 +12,7 @@ import type {
 
 type StateListener = () => void;
 type StartListener = () => void;
+type RoomClosedListener = () => void;
 
 interface PendingRequest {
   resolve: () => void;
@@ -39,6 +40,7 @@ export class NetClient {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly stateListeners = new Set<StateListener>();
   private readonly startListeners = new Set<StartListener>();
+  private readonly roomClosedListeners = new Set<RoomClosedListener>();
   private latestSnapshot: NetGameSnapshot | null = null;
   private readonly peerInputs: Record<PlayerSeat, NetFrameInput> = {
     p1: { jumpDown: false, jumpJustPressed: false, jumpJustReleased: false },
@@ -103,6 +105,10 @@ export class NetClient {
 
   advanceLevel(): void {
     this.send({ type: 'advance_level' });
+  }
+
+  disbandRoom(): void {
+    this.send({ type: 'disband_room' });
   }
 
   leaveRoom(): void {
@@ -181,6 +187,11 @@ export class NetClient {
     return () => this.startListeners.delete(listener);
   }
 
+  onRoomClosed(listener: RoomClosedListener): () => void {
+    this.roomClosedListeners.add(listener);
+    return () => this.roomClosedListeners.delete(listener);
+  }
+
   private request(message: RequestMessage): Promise<void> {
     const requestId = `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const payload = { ...message, requestId } as ClientToServerMessage;
@@ -248,6 +259,13 @@ export class NetClient {
         this.roomState = null;
         this.latestSnapshot = null;
         this.emitState();
+        return;
+      case 'room_closed':
+        this.seat = null;
+        this.roomState = null;
+        this.latestSnapshot = null;
+        this.emitState();
+        for (const listener of this.roomClosedListeners) listener();
         return;
       case 'error':
         this.rejectRequest(message.requestId, new Error(message.message));

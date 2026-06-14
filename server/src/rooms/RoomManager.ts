@@ -100,6 +100,9 @@ export class RoomManager {
       case 'advance_level':
         this.advanceLevel(session);
         return;
+      case 'disband_room':
+        this.disbandRoom(session);
+        return;
       case 'leave_room':
         this.leaveRoom(session);
         this.send(session.socket, { type: 'room_left' });
@@ -337,6 +340,27 @@ export class RoomManager {
       entry.room.hostSeat = entry.room.seats.p1 ? 'p1' : 'p2';
     }
     this.broadcastRoomState(entry.room);
+  }
+
+  private disbandRoom(session: Session): void {
+    const entry = this.getSeatEntry(session);
+    if (!entry) return;
+    const room = entry.room;
+    for (const seat of SEATS) {
+      const player = room.seats[seat];
+      if (!player?.socket) continue;
+      const peerSession = this.sessions.get(player.socket);
+      if (peerSession) {
+        peerSession.roomId = null;
+        peerSession.seat = null;
+      }
+      this.send(player.socket, {
+        type: 'room_closed',
+        reason: 'disbanded',
+        message: '房间已解散。',
+      });
+    }
+    this.rooms.delete(room.roomId);
   }
 
   private markDisconnected(session: Session): void {
