@@ -128,6 +128,8 @@ export type ServerToClientMessage =
       type: 'game_started';
       yourSeat: PlayerSeat;
       state: RoomState;
+      terrain: import('../level/LevelData').PieceData[];
+      initialSnapshot: NetGameSnapshot;
     }
   | {
       type: 'peer_input';
@@ -138,6 +140,11 @@ export type ServerToClientMessage =
     }
   | {
       type: 'snapshot';
+      snapshot: NetGameSnapshot;
+      serverTime: number;
+    }
+  | {
+      type: 'game_tick';
       snapshot: NetGameSnapshot;
       serverTime: number;
     }
