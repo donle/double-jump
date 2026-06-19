@@ -56,6 +56,13 @@ function initRegistry(): void {
 initRegistry();
 registerPwaServiceWorker();
 
+// 预连接 WebSocket：用户在 HomeScene 看到"创建房间"按钮时，连接已经建立。
+// connect() 是幂等的（已连过会直接返回），失败也不会阻塞启动。
+netClient.connect().catch((err) => {
+  // 静默 — 网络差时用户走离线模式即可，不打扰首屏体验。
+  console.warn('[net] pre-connect failed:', err);
+});
+
 netClient.onRoomClosed(() => {
   game.scene.stop('GameScene');
   game.scene.stop('EndScene');

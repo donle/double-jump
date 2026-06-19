@@ -18,6 +18,16 @@ const NETWORK_SNAPSHOT_INTERVAL_MS = 100;
 const NETWORK_SNAPSHOT_CORRECTION_ALPHA = 0.35;
 
 /**
+ * 服务端权威模式（重构后）参数：
+ *   - 30Hz server tick → 60fps client render，需要 lerp 平滑。
+ *   - NETWORK_TICK_LERP=0.6：每个渲染帧向服务端权威位置拉近 60%，
+ *     Player.applyNetworkSnapshot 内部在 dist > 180 时直接 snap（避免永远到不了）。
+ *   - TICK_STALE_MS=200：超过 200ms 没收到 tick 就显示"网络不稳定…"提示。
+ */
+const NETWORK_TICK_LERP = 0.6;
+const TICK_STALE_MS = 200;
+
+/**
  * 主游戏场景（M3）：双人本地协作 + 跳跃高度指示 + 单跳规则。
  *
  * 单跳规则（由 GameScene.updateCanJump 每帧维护）：
@@ -61,6 +71,10 @@ export class GameScene extends Phaser.Scene {
   private unsubscribeNetState: (() => void) | null = null;
   private unsubscribeNetStart: (() => void) | null = null;
   private readonly debugMode = DEBUG.enabled;
+  /** 最近一次收到 server tick 的时间戳（ms）。0 表示还没收到过。 */
+  private lastServerTickAt = 0;
+  /** 网络卡顿指示器：超过 TICK_STALE_MS 没收到 tick 时显示。仅服务端权威模式下使用。 */
+  private networkStutterIndicator: Phaser.GameObjects.Text | null = null;
 
   preload(): void {
     this.load.image('bg-easy-portrait', '/imagegen/easy-portrait-bg.png');
@@ -141,12 +155,15 @@ export class GameScene extends Phaser.Scene {
     this.matter.world.setBounds(-2000, -1000, 10000, 3200, 200, true, true, false, true);
 
     // 关卡生成（M4-B #5：接受 difficulty 参数）
+    // 服务端权威模式：优先用 server 在 game_started 里发来的 PieceData，
+    // 避免两端关卡布局漂移（详见 docs/superpowers/plans/...）。
+    const serverTerrain = netClient.consumePendingTerrain();
     const gen = new LevelGenerator({
       totalLength: PHYSICS.level.totalLength,
       baseY: PHYSICS.level.baseY,
       startPlatformWidth: PHYSICS.level.startPlatformWidth,
       seed,
-    }, difficulty, level);
+    }, difficulty, level, serverTerrain ?? undefined);
     const { pieces } = gen.generate(this);
     this.pieces = pieces;
     for (const p of pieces) {
@@ -228,6 +245,22 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5, 1)
       .setVisible(false);
 
+    // 网络卡顿指示器：固定在屏幕顶部，不随相机滚动。仅在服务端权威模式下使用。
+    const w = this.scale.width;
+    this.networkStutterIndicator = this.add
+      .text(w / 2, 60, '网络不稳定…', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '18px',
+        color: '#ffe066',
+        fontStyle: 'bold',
+        backgroundColor: 'rgba(0,0,0,0.7)',
+        padding: { x: 12, y: 6 },
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(2700)
+      .setVisible(false);
+
     // R 键：键盘玩家的备用快捷键（鼠标 / 触屏用户用面板按钮）
     this.restartKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.R);
     this.restartKey.on('down', () => this.restartGame());
@@ -306,19 +339,33 @@ export class GameScene extends Phaser.Scene {
     this.inputManager.update(now);
 
     const [p1Input, p2Input] = this.resolvePlayerInputs(input);
-    this.p1.update(delta, p1Input);
-    this.p2.update(delta, p2Input);
-    // 绳子必须在 p1/p2.update 之后调用：弹簧/硬约束会写 body.velocity，
-    // 必须在玩家自己改完速度之后再施加，否则玩家的更新会覆盖绳子。
-    this.rope.update(delta);
-    this.p1.stabilizeGroundedVelocityAfterExternalForces();
-    this.p2.stabilizeGroundedVelocityAfterExternalForces();
+
+    if (netClient.isPlaying()) {
+      // ── 服务端权威模式：接收服务器 tick，不做本地物理 ──
+      this.applyServerTick();
+    } else {
+      // ── 单机模式：本地物理 ──
+      this.p1.update(delta, p1Input);
+      this.p2.update(delta, p2Input);
+      // 绳子必须在 p1/p2.update 之后调用：弹簧/硬约束会写 body.velocity，
+      // 必须在玩家自己改完速度之后再施加，否则玩家的更新会覆盖绳子。
+      this.rope.update(delta);
+      this.p1.stabilizeGroundedVelocityAfterExternalForces();
+      this.p2.stabilizeGroundedVelocityAfterExternalForces();
+    }
 
     // 地形更新（移动板/限时板需要每帧）— 当前只 ground+pit，本循环空跑
     for (const piece of this.pieces) {
       if (!piece.isDestroyed()) piece.update(delta, now);
     }
 
+    // 后物理地面约束：仅单机模式（服务端权威模式下由服务器处理）
+    if (!netClient.isPlaying()) {
+      this.p1.applyGroundConstraint();
+      this.p2.applyGroundConstraint();
+    }
+
+    // 同步联机快照（旧 host-authoritative 兼容，服务端权威模式下 game_tick 已处理）
     this.syncOnlineSnapshot(now);
 
     // 相机跟随
@@ -366,6 +413,34 @@ export class GameScene extends Phaser.Scene {
       return input;
     }
     return NEUTRAL_INPUT;
+  }
+
+  /**
+   * 服务端权威模式：消费服务器 tick，将权威状态应用到两个玩家。
+   * 不做本地物理——服务器运行 Matter.js，客户端只渲染。
+   *
+   * 服务器 30Hz 广播，客户端 60fps 渲染：用 0.6 lerp 把两次 tick 之间的位置插值到下一帧，
+   * 避免"瞬移"抖动。距离 > NETWORK_SNAP_DISTANCE 时 Player.applyNetworkSnapshot 直接 snap。
+   */
+  private applyServerTick(): void {
+    const tick = netClient.consumeLatestTick();
+    if (!tick) {
+      if (this.lastServerTickAt > 0 && Date.now() - this.lastServerTickAt > TICK_STALE_MS) {
+        this.networkStutterIndicator?.setVisible(true);
+      }
+      return;
+    }
+    this.lastServerTickAt = Date.now();
+    this.networkStutterIndicator?.setVisible(false);
+
+    if (tick.gameState !== 'playing') {
+      this.applyRemoteFinalSnapshot(tick);
+      return;
+    }
+
+    this.p1.applyNetworkSnapshot(tick.p1, NETWORK_TICK_LERP);
+    this.p2.applyNetworkSnapshot(tick.p2, NETWORK_TICK_LERP);
+    this.trailerId = tick.trailerId;
   }
 
   private syncOnlineSnapshot(now: number): void {

@@ -42,6 +42,13 @@ export class NetClient {
   private readonly startListeners = new Set<StartListener>();
   private readonly roomClosedListeners = new Set<RoomClosedListener>();
   private latestSnapshot: NetGameSnapshot | null = null;
+  private latestTick: NetGameSnapshot | null = null;
+  /**
+   * 服务端权威模式下，game_started 携带的关卡数据 + 初始 snapshot。
+   * GameScene 通过 consumePendingTerrain / consumePendingInitialSnapshot 一次性读取。
+   */
+  private pendingTerrain: import('../../../shared/level/LevelData').PieceData[] | null = null;
+  private pendingInitialSnapshot: NetGameSnapshot | null = null;
   private readonly peerInputs: Record<PlayerSeat, NetFrameInput> = {
     p1: { jumpDown: false, jumpJustPressed: false, jumpJustReleased: false },
     p2: { jumpDown: false, jumpJustPressed: false, jumpJustReleased: false },
@@ -164,6 +171,33 @@ export class NetClient {
     return this.latestSnapshot;
   }
 
+  getLatestTick(): NetGameSnapshot | null {
+    return this.latestTick;
+  }
+
+  consumeLatestTick(): NetGameSnapshot | null {
+    const tick = this.latestTick;
+    this.latestTick = null;
+    return tick;
+  }
+
+  /**
+   * 消费 game_started 携带的关卡数据。GameScene 在 start 回调里读一次。
+   * 返回后清空，下次 game_started 才会再次填值。
+   */
+  consumePendingTerrain(): import('../../../shared/level/LevelData').PieceData[] | null {
+    const t = this.pendingTerrain;
+    this.pendingTerrain = null;
+    return t;
+  }
+
+  /** 消费 game_started 携带的初始 snapshot（与 latestTick 同一份）。 */
+  consumePendingInitialSnapshot(): NetGameSnapshot | null {
+    const s = this.pendingInitialSnapshot;
+    this.pendingInitialSnapshot = null;
+    return s;
+  }
+
   isOnline(): boolean {
     return this.roomState !== null && this.seat !== null;
   }
@@ -241,6 +275,12 @@ export class NetClient {
         this.seat = message.yourSeat;
         this.roomState = message.state;
         this.latestSnapshot = null;
+        // 服务端权威模式：缓存服务器发来的关卡数据 + 初始 snapshot，
+        // GameScene 在 start 回调里读取并消费。
+        this.pendingTerrain = message.terrain;
+        this.pendingInitialSnapshot = message.initialSnapshot;
+        // 直接把首帧 tick 喂进 latestTick，避免 applyServerTick 第一帧真空。
+        this.latestTick = message.initialSnapshot;
         this.emitState();
         for (const listener of this.startListeners) listener();
         return;
@@ -253,6 +293,9 @@ export class NetClient {
         return;
       case 'snapshot':
         this.latestSnapshot = message.snapshot;
+        return;
+      case 'game_tick':
+        this.latestTick = message.snapshot;
         return;
       case 'room_left':
         this.seat = null;

@@ -53,6 +53,8 @@ export class Player {
   private state: PlayerState = 'in_air';
   /** 当前正在支撑玩家的 body 集合 */
   private readonly supports: Set<MatterJS.BodyType> = new Set();
+  /** 当前主要支撑 body（最近一次 onContactStart 的 top 接触体）。用于落地吸附和移动平台跟随。 */
+  private supportBody: MatterJS.BodyType | null = null;
   /** 当前正在侧面/底面接触的固体 body。侧墙摩擦必须为 0，避免贴崖壁卡住。 */
   private readonly sideContacts: Set<MatterJS.BodyType> = new Set();
   /** 最近一次可靠落地的地面 body，用顶面坐标容忍 collisionStart/End 的瞬时抖动。 */
@@ -217,6 +219,7 @@ export class Player {
       this.jumpStartY = body.position.y;
       this.jumpStartMs = nowMs;
       this.supports.clear();
+      this.supportBody = null;
       this.state = 'in_air';
       getSound()?.playJump();
     }
@@ -308,6 +311,76 @@ export class Player {
 
   private hasPhysicalSupport(): boolean {
     return this.supports.size > 0;
+  }
+
+  /** 落地瞬间吸附：将玩家底面精确对齐到支撑面顶面，消除 Matter 推出过冲。 */
+  private snapToSupportSurface(supportBody: MatterJS.BodyType): void {
+    const body = this.body as unknown as { position: { x: number; y: number } };
+    const bounds = (supportBody as unknown as { bounds?: { min: { y: number } } }).bounds;
+    if (!bounds) return;
+    const supportTopY = bounds.min.y;
+    const halfH = PHYSICS.player.height / 2;
+    const targetY = supportTopY - halfH;
+    const currentY = body.position.y;
+    // 只在玩家非常接近支撑面时吸附（4px 容差），避免远距离误拉
+    if (Math.abs(currentY - targetY) <= 4) {
+      this.scene.matter.body.setPosition(this.body, { x: body.position.x, y: targetY });
+    }
+  }
+
+  /**
+   * 后物理地面约束：在所有物理、绳索、地形更新完成后调用。
+   * **仅对移动平台生效**——检测支撑体是否移动，若移动则将玩家吸附到当前顶面。
+   * 静态平台完全不干预，靠 Matter 接触求解 + 现有 ground slide / stabilize 处理。
+   *
+   * 设计原理：
+   *   - 静态平台：约束不触发（supportMoved=false），零副作用
+   *   - 移动平台：支撑面每帧 setPosition → position≠positionPrev → 检测到移动
+   *     → 吸附玩家到当前平台顶面，解决 carryRiders 与 Matter 接触求解器的拉扯战
+   *   - 绳索拉拽：超过 maxDeviation 时不约束（玩家已被拉离表面）
+   */
+  applyGroundConstraint(): void {
+    if (this.state !== 'on_ground' || !this.supportBody || this.jumping) return;
+
+    // 检测支撑体是否移动了（FloatingMoving 每帧 setPosition 使 position≠positionPrev）
+    // 静态平台（GroundPlatform / FloatingFixed）从不移动，position===positionPrev → 直接跳过
+    const sp = this.supportBody as unknown as {
+      position: { x: number; y: number };
+      positionPrev: { x: number; y: number };
+    };
+    const supportMoved =
+      Math.abs(sp.position.x - sp.positionPrev.x) > 0.01 ||
+      Math.abs(sp.position.y - sp.positionPrev.y) > 0.01;
+
+    if (!supportMoved) return; // 静态平台：不干预
+
+    // ── 移动平台专用路径 ──
+    const body = this.body as unknown as {
+      position: { x: number; y: number };
+      velocity: { x: number; y: number };
+    };
+
+    const bounds = (this.supportBody as unknown as { bounds?: { min: { y: number } } }).bounds;
+    if (!bounds) return;
+
+    const supportTopY = bounds.min.y;
+    const halfH = PHYSICS.player.height / 2;
+    const targetY = supportTopY - halfH;
+    const currentY = body.position.y;
+    const deviation = Math.abs(currentY - targetY);
+
+    // 超过 12px 不约束——玩家已被绳索拉离表面
+    if (deviation > 12) return;
+
+    // 吸附到平台当前顶面（偏差 > 0.5px 才执行）
+    if (deviation > 0.5) {
+      this.scene.matter.body.setPosition(this.body, { x: body.position.x, y: targetY });
+    }
+
+    // 移动平台上清零 vy（防止平台移动残留速度在下一帧 Matter 步中制造间隙）
+    if (body.velocity.y !== 0) {
+      this.scene.matter.body.setVelocity(this.body, { x: body.velocity.x, y: 0 });
+    }
   }
 
   /**
@@ -440,6 +513,7 @@ export class Player {
     }
     this.supports.clear();
     this.sideContacts.clear();
+    this.supportBody = null;
     getSound()?.playPit();
   }
 
@@ -476,6 +550,7 @@ export class Player {
       }
       this.sideContacts.delete(other);
       this.supports.add(other);
+      this.supportBody = other;
       const velocity = this.body.velocity;
       if (velocity.y > 0) {
         this.scene.matter.body.setVelocity(this.body, { x: velocity.x, y: 0 });
@@ -485,6 +560,8 @@ export class Player {
         this.state = 'on_ground';
         this.inPit = false;
         this.jumping = false; // 落地，强制结束上升期
+        // 落地瞬间吸附到支撑面，消除 Matter 推出过冲造成的 1-2px 抖动
+        this.snapToSupportSurface(other);
         if (wasInAir) getSound()?.playLand();
       }
     }
@@ -513,6 +590,12 @@ export class Player {
       this.supports.delete(other);
       this.sideContacts.delete(other);
       this.updateContactFriction();
+      // 主支撑体离开时，尝试切换到剩余支撑体
+      if (other === this.supportBody) {
+        this.supportBody = this.supports.size > 0
+          ? (this.supports.values().next().value ?? null)
+          : null;
+      }
     }
     if (label === 'pit') {
       this.pitContacts.delete(other);
