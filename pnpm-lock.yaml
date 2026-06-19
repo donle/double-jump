@@ -32,10 +32,16 @@ importers:
 
   server:
     dependencies:
+      matter-js:
+        specifier: ^0.20.0
+        version: 0.20.0
       ws:
         specifier: ^8.17.1
         version: 8.21.0
     devDependencies:
+      '@types/matter-js':
+        specifier: ^0.20.2
+        version: 0.20.2
       '@types/node':
         specifier: ^20.14.2
         version: 20.19.43

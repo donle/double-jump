@@ -10,7 +10,8 @@ import type {
   RoomPlayer,
   RoomState,
   ServerToClientMessage,
-} from '../../../shared/net/protocol';
+} from '../../../shared/net/protocol.js';
+import { ServerGameRoom, type TickCallback } from '../game/ServerGameRoom.js';
 
 interface Session {
   clientId: string;
@@ -37,6 +38,7 @@ interface Room {
   levelRun: LevelRun;
   seats: Record<PlayerSeat, SeatState | null>;
   restartVotes: Set<PlayerSeat>;
+  gameRoom: ServerGameRoom | null;
 }
 
 const SEATS: PlayerSeat[] = ['p1', 'p2'];
@@ -126,6 +128,7 @@ export class RoomManager {
       difficulty,
       levelRun: createLevelRun(),
       restartVotes: new Set(),
+      gameRoom: null,
       seats: {
         p1: this.createSeat(session, true),
         p2: null,
@@ -198,21 +201,51 @@ export class RoomManager {
       if (player) player.ready = true;
     }
 
+    this.bootGameRoom(entry.room);
+  }
+
+  /**
+   * 创建新的服务端权威游戏房间，并给两个座位广播 game_started。
+   * 任何重新开局（startGame / restartVote / advanceLevel）都走这里。
+   */
+  private bootGameRoom(room: Room): void {
+    // 销毁旧游戏房间
+    room.gameRoom?.destroy();
+
+    const onTick: TickCallback = (snapshot) => {
+      for (const seat of SEATS) {
+        const player = room.seats[seat];
+        if (!player?.socket) continue;
+        this.send(player.socket, { type: 'game_tick', snapshot, serverTime: Date.now() });
+      }
+    };
+    room.gameRoom = new ServerGameRoom(room.difficulty, room.level, room.levelRun, onTick);
+
+    const terrain = room.gameRoom.getTerrainPieces();
+    const initialSnapshot = room.gameRoom.getInitialSnapshot();
+    if (!initialSnapshot) {
+      throw new Error('ServerGameRoom preWarm failed to produce initial snapshot');
+    }
+
     for (const seat of SEATS) {
-      const player = entry.room.seats[seat];
+      const player = room.seats[seat];
       if (!player?.socket) continue;
       this.send(player.socket, {
         type: 'game_started',
         yourSeat: seat,
-        state: this.toRoomState(entry.room),
+        state: this.toRoomState(room),
+        terrain,
+        initialSnapshot,
       });
     }
-    this.broadcastRoomState(entry.room);
+    this.broadcastRoomState(room);
   }
 
   private returnLobby(session: Session): void {
     const entry = this.getSeatEntry(session);
     if (!entry) return;
+    entry.room.gameRoom?.destroy();
+    entry.room.gameRoom = null;
     entry.room.phase = 'lobby';
     entry.room.restartVotes.clear();
     entry.room.levelRun = createLevelRun();
@@ -238,16 +271,7 @@ export class RoomManager {
         const player = entry.room.seats[seat];
         if (player) player.ready = true;
       }
-      for (const seat of SEATS) {
-        const player = entry.room.seats[seat];
-        if (!player?.socket) continue;
-        this.send(player.socket, {
-          type: 'game_started',
-          yourSeat: seat,
-          state: this.toRoomState(entry.room),
-        });
-      }
-      this.broadcastRoomState(entry.room);
+      this.bootGameRoom(entry.room);
       return;
     }
     this.broadcastRoomState(entry.room);
@@ -268,55 +292,26 @@ export class RoomManager {
       if (player) player.ready = true;
     }
 
-    for (const seat of SEATS) {
-      const player = entry.room.seats[seat];
-      if (!player?.socket) continue;
-      this.send(player.socket, {
-        type: 'game_started',
-        yourSeat: seat,
-        state: this.toRoomState(entry.room),
-      });
-    }
-    this.broadcastRoomState(entry.room);
+    this.bootGameRoom(entry.room);
   }
 
   private forwardInput(
     session: Session,
-    seq: number,
+    _seq: number,
     input: NetFrameInput,
   ): void {
     const entry = this.getSeatEntry(session);
     if (!entry || entry.room.phase !== 'playing') return;
 
-    for (const seat of SEATS) {
-      if (seat === entry.seatId) continue;
-      const peer = entry.room.seats[seat];
-      if (!peer?.socket) continue;
-      this.send(peer.socket, {
-        type: 'peer_input',
-        seat: entry.seatId,
-        seq,
-        input,
-        serverTime: Date.now(),
-      });
+    // 服务端权威模式：输入发给游戏房间，不再转发给 peer
+    if (entry.room.gameRoom) {
+      entry.room.gameRoom.applyInput(entry.seatId, input);
     }
   }
 
   private forwardSnapshot(session: Session, snapshot: NetGameSnapshot): void {
-    const entry = this.getSeatEntry(session);
-    if (!entry || entry.room.phase !== 'playing') return;
-    if (entry.room.hostSeat !== entry.seatId) return;
-
-    for (const seat of SEATS) {
-      if (seat === entry.seatId) continue;
-      const peer = entry.room.seats[seat];
-      if (!peer?.socket) continue;
-      this.send(peer.socket, {
-        type: 'snapshot',
-        snapshot,
-        serverTime: Date.now(),
-      });
-    }
+    // 服务端权威模式：忽略客户端发来的 snapshot（服务器自己生成）
+    void session; void snapshot;
   }
 
   private leaveRoom(session: Session): void {
@@ -332,6 +327,7 @@ export class RoomManager {
     session.seat = null;
 
     if (!entry.room.seats.p1 && !entry.room.seats.p2) {
+      entry.room.gameRoom?.destroy();
       this.rooms.delete(entry.room.roomId);
       return;
     }
@@ -346,6 +342,8 @@ export class RoomManager {
     const entry = this.getSeatEntry(session);
     if (!entry) return;
     const room = entry.room;
+    room.gameRoom?.destroy();
+    room.gameRoom = null;
     for (const seat of SEATS) {
       const player = room.seats[seat];
       if (!player?.socket) continue;
@@ -376,6 +374,7 @@ export class RoomManager {
       if (entry.seat.disconnectAt && Date.now() - entry.seat.disconnectAt < RECONNECT_TTL_MS) return;
       entry.room.seats[entry.seatId] = null;
       if (!entry.room.seats.p1 && !entry.room.seats.p2) {
+        entry.room.gameRoom?.destroy();
         this.rooms.delete(entry.room.roomId);
       } else {
         this.broadcastRoomState(entry.room);
