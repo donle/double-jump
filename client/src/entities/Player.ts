@@ -73,6 +73,17 @@ export class Player {
   /** 稳定悬挂态起始时刻（ms）。inPit + in_air + !jumping + |vy|<0.5 + supports=0 全满足时设 nowMs，任意一条件不满足重置 0。
    *  持续 300ms 后由 isStablyHanging() 返回 true，用于 #48 让另一玩家可跳。 */
   private stablyHangingSinceMs = 0;
+  /**
+   * 局部坐标锁定（与服务端 ServerPlayer 镜像）。
+   * 落地瞬间用解析抛物线预测精确 (x, y) 后 lockToPlatform；
+   * 之后每帧 enforceLocalFrame 强制把玩家位置 = platform.pos + offset，
+   * 消除 Matter 接触求解器的 1-2px 漂移（落点 / 浮空板打滑问题）。
+   * 起跳 / 平台离开 / in_air 转移时 unlock。
+   */
+  private ridingPlatform: MatterJS.BodyType | null = null;
+  /** 玩家中心相对平台中心的局部坐标（landX/Y - platform.pos）。 */
+  private platformOffsetX = 0;
+  private platformOffsetY = 0;
 
   constructor(scene: Phaser.Scene, x: number, y: number, id: PlayerId, color: number) {
     this.scene = scene;
@@ -220,6 +231,7 @@ export class Player {
       this.jumpStartMs = nowMs;
       this.supports.clear();
       this.supportBody = null;
+      this.unlockFromPlatform();
       this.state = 'in_air';
       getSound()?.playJump();
     }
@@ -313,74 +325,103 @@ export class Player {
     return this.supports.size > 0;
   }
 
-  /** 落地瞬间吸附：将玩家底面精确对齐到支撑面顶面，消除 Matter 推出过冲。 */
-  private snapToSupportSurface(supportBody: MatterJS.BodyType): void {
-    const body = this.body as unknown as { position: { x: number; y: number } };
-    const bounds = (supportBody as unknown as { bounds?: { min: { y: number } } }).bounds;
-    if (!bounds) return;
-    const supportTopY = bounds.min.y;
-    const halfH = PHYSICS.player.height / 2;
-    const targetY = supportTopY - halfH;
-    const currentY = body.position.y;
-    // 只在玩家非常接近支撑面时吸附（4px 容差），避免远距离误拉
-    if (Math.abs(currentY - targetY) <= 4) {
-      this.scene.matter.body.setPosition(this.body, { x: body.position.x, y: targetY });
-    }
-  }
-
   /**
-   * 后物理地面约束：在所有物理、绳索、地形更新完成后调用。
-   * **仅对移动平台生效**——检测支撑体是否移动，若移动则将玩家吸附到当前顶面。
-   * 静态平台完全不干预，靠 Matter 接触求解 + 现有 ground slide / stabilize 处理。
+   * 后物理地面约束（局部坐标系锁定）。在所有物理、绳索、地形更新完成后调用。
    *
-   * 设计原理：
-   *   - 静态平台：约束不触发（supportMoved=false），零副作用
-   *   - 移动平台：支撑面每帧 setPosition → position≠positionPrev → 检测到移动
-   *     → 吸附玩家到当前平台顶面，解决 carryRiders 与 Matter 接触求解器的拉扯战
-   *   - 绳索拉拽：超过 maxDeviation 时不约束（玩家已被拉离表面）
+   * 旧策略：仅在 platform 移动时（position≠positionPrev）吸附 y，偏差 > 12px 就放弃 —
+   * 浮空板 / 浮空板 + 绳索拉扯场景下基本不生效，玩家在板上"打滑"；
+   * 静态平台更不干预，1-2px 漂移靠 ground slide 缓解但视觉上仍有跳帧。
+   *
+   * 新策略（方案 B — 与服务端 ServerPlayer 镜像）：
+   *   1. 落地瞬间 onContactStart 用解析抛物线预测精确 (x, y) → lockToPlatform
+   *   2. 每帧把玩家位置硬 setPosition 到 platform.pos + offset
+   *   3. 玩家的水平相对位移（rope 拉扯 / 自身水平移动）通过累加
+   *      (player.vx - platform.vx) 自然吸收到 platformOffsetX
+   *   4. vy 清零（平台顶面已确定，y 自由度数掉）
+   *
+   * 效果：玩家在浮空板上绝对不漂移；静态平台也 0 抖动；起跳后再次落到同一平台
+   *       仍走解析预测，不依赖 Matter 接触求解精度。
    */
   applyGroundConstraint(): void {
-    if (this.state !== 'on_ground' || !this.supportBody || this.jumping) return;
+    this.enforceLocalFrame();
+  }
 
-    // 检测支撑体是否移动了（FloatingMoving 每帧 setPosition 使 position≠positionPrev）
-    // 静态平台（GroundPlatform / FloatingFixed）从不移动，position===positionPrev → 直接跳过
-    const sp = this.supportBody as unknown as {
+  enforceLocalFrame(): void {
+    if (this.state !== 'on_ground' || !this.ridingPlatform || this.jumping) return;
+
+    const platform = this.ridingPlatform as unknown as {
       position: { x: number; y: number };
-      positionPrev: { x: number; y: number };
+      velocity: { x: number; y: number };
     };
-    const supportMoved =
-      Math.abs(sp.position.x - sp.positionPrev.x) > 0.01 ||
-      Math.abs(sp.position.y - sp.positionPrev.y) > 0.01;
-
-    if (!supportMoved) return; // 静态平台：不干预
-
-    // ── 移动平台专用路径 ──
     const body = this.body as unknown as {
       position: { x: number; y: number };
       velocity: { x: number; y: number };
     };
 
-    const bounds = (this.supportBody as unknown as { bounds?: { min: { y: number } } }).bounds;
-    if (!bounds) return;
+    // 玩家相对平台的速度 → 累加到 offsetX
+    // 平台自身速度已经隐式包含在 platform.position 变化中，不重复累加
+    const relativeVx = body.velocity.x - platform.velocity.x;
+    this.platformOffsetX += relativeVx;
 
-    const supportTopY = bounds.min.y;
-    const halfH = PHYSICS.player.height / 2;
-    const targetY = supportTopY - halfH;
+    const targetX = platform.position.x + this.platformOffsetX;
+    const targetY = platform.position.y + this.platformOffsetY;
+    // 用 setPosition 而非直写 body.position：直写会让 positionPrev 残留旧值，
+    // 下一帧 Engine.update 用 (pos - posPrev)/dt 反算速度 → 虚假 vy → 玩家被弹起
+    // 失去地面接触 → 落回 → onContactStart 的 else 分支用漂移后的位置重新 lockToPlatform
+    // → offsetY 被刷新成错误值 → 玩家永久陷入地底（漂移会越来越大）。
+    this.scene.matter.body.setPosition(body as unknown as MatterJS.BodyType, { x: targetX, y: targetY });
+    // 永远 setVelocity（不只是 vy!=0 时），确保 positionPrev = position - velocity
+    // 被刷新；vy=0 时跳过会让 positionPrev 继续指向 stale 旧值，下一帧又算出虚假速度。
+    this.scene.matter.body.setVelocity(body as unknown as MatterJS.BodyType, { x: body.velocity.x, y: 0 });
+  }
+
+  /**
+   * 解析预测落点：抛物线方程 y(t) = currentY + vy*t + 0.5*g*t²
+   * 令 y(t) = targetY（平台顶面 - 半身高）→ 0.5*g*t² + vy*t - dy = 0
+   * → t = (-vy + sqrt(vy² + 2*g*dy)) / g
+   * g 是"每帧重力增量"（fallGravity=0.85 px/frame²），t 单位是 frame。
+   *
+   * **vy 必须由调用方传入**——predictLandingPoint 内部不能再读 body.velocity.y，
+   * 否则 onContactStart 前面已经 setVelocity({y:0}) 把 vy 清零了，公式会拿到 0 → t 偏大 → predicted.x 越界。
+   *
+   * @param vy 入参速度 y 分量（**必须是接触瞬间未清零的原始 vy**）
+   * @param gravity 每帧重力增量（px/frame²），默认用 fallGravity
+   */
+  private predictLandingPoint(
+    platform: MatterJS.BodyType,
+    vy: number,
+    vx: number,
+    gravity: number = PHYSICS.jump.fallGravity,
+  ): { x: number; y: number; t: number } {
+    const platformTopY = (platform as unknown as { bounds: { min: { y: number } } }).bounds.min.y;
+    const targetY = platformTopY - PHYSICS.player.height / 2;
+    const body = this.body as unknown as { position: { x: number; y: number } };
+    const currentX = body.position.x;
     const currentY = body.position.y;
-    const deviation = Math.abs(currentY - targetY);
+    const dy = targetY - currentY;
 
-    // 超过 12px 不约束——玩家已被绳索拉离表面
-    if (deviation > 12) return;
-
-    // 吸附到平台当前顶面（偏差 > 0.5px 才执行）
-    if (deviation > 0.5) {
-      this.scene.matter.body.setPosition(this.body, { x: body.position.x, y: targetY });
+    let t: number;
+    if (dy <= 0) {
+      // 玩家已经到或穿过平台顶面（罕见；坑边缘可能发生）→ 立即落地
+      t = 0;
+    } else {
+      const disc = vy * vy + 2 * gravity * dy;
+      t = disc > 0 ? (-vy + Math.sqrt(disc)) / gravity : 0;
     }
 
-    // 移动平台上清零 vy（防止平台移动残留速度在下一帧 Matter 步中制造间隙）
-    if (body.velocity.y !== 0) {
-      this.scene.matter.body.setVelocity(this.body, { x: body.velocity.x, y: 0 });
-    }
+    return { x: currentX + vx * t, y: targetY, t };
+  }
+
+  private lockToPlatform(platform: MatterJS.BodyType, landingX: number, landingY: number): void {
+    this.ridingPlatform = platform;
+    this.platformOffsetX = landingX - (platform as unknown as { position: { x: number; y: number } }).position.x;
+    this.platformOffsetY = landingY - (platform as unknown as { position: { x: number; y: number } }).position.y;
+  }
+
+  private unlockFromPlatform(): void {
+    this.ridingPlatform = null;
+    this.platformOffsetX = 0;
+    this.platformOffsetY = 0;
   }
 
   /**
@@ -514,6 +555,7 @@ export class Player {
     this.supports.clear();
     this.sideContacts.clear();
     this.supportBody = null;
+    this.unlockFromPlatform();
     getSound()?.playPit();
   }
 
@@ -552,17 +594,31 @@ export class Player {
       this.supports.add(other);
       this.supportBody = other;
       const velocity = this.body.velocity;
-      if (velocity.y > 0) {
-        this.scene.matter.body.setVelocity(this.body, { x: velocity.x, y: 0 });
-      }
       if (this.state === 'in_air') {
-        const wasInAir = true;
+        // ── 解析预测精确落点 ──
+        // **必须在清零 vy 之前**调用，并把原始 (vx, vy) 显式传进去；
+        // 否则 predictLandingPoint 内部读 body.velocity.y 会拿到 0，
+        // 公式 t = √(2·dy/g) 会比真实值偏大几帧，predicted.x 越出平台外。
+        const predicted = this.predictLandingPoint(other, velocity.y, velocity.x);
+        if (velocity.y > 0) {
+          this.scene.matter.body.setVelocity(this.body, { x: velocity.x, y: 0 });
+        }
+        this.scene.matter.body.setPosition(this.body, { x: predicted.x, y: predicted.y });
+        this.scene.matter.body.setVelocity(this.body, { x: velocity.x, y: 0 });
+
         this.state = 'on_ground';
         this.inPit = false;
         this.jumping = false; // 落地，强制结束上升期
-        // 落地瞬间吸附到支撑面，消除 Matter 推出过冲造成的 1-2px 抖动
-        this.snapToSupportSurface(other);
-        if (wasInAir) getSound()?.playLand();
+
+        // 锁定局部坐标系：之后每帧 enforceLocalFrame 强制对齐 platform.pos + offset
+        this.lockToPlatform(other, predicted.x, predicted.y);
+
+        getSound()?.playLand();
+      } else {
+        // 已经在 on_ground（侧接触转顶接触，或同帧多个顶接触）：
+        // 重新锚定到新平台（多见于骑在两块板交界处）
+        const body = this.body as unknown as { position: { x: number; y: number } };
+        this.lockToPlatform(other, body.position.x, body.position.y);
       }
     }
     if (label === 'pit') {
@@ -592,9 +648,23 @@ export class Player {
       this.updateContactFriction();
       // 主支撑体离开时，尝试切换到剩余支撑体
       if (other === this.supportBody) {
-        this.supportBody = this.supports.size > 0
+        const next = this.supports.size > 0
           ? (this.supports.values().next().value ?? null)
           : null;
+        this.supportBody = next;
+        // 主支撑体切换：ridingPlatform 跟着切，offset 用当前 player 位置重新算
+        if (this.ridingPlatform === other) {
+          this.ridingPlatform = next;
+          if (next) {
+            const body = this.body as unknown as { position: { x: number; y: number } };
+            const np = next as unknown as { position: { x: number; y: number } };
+            this.platformOffsetX = body.position.x - np.position.x;
+            this.platformOffsetY = body.position.y - np.position.y;
+          }
+        }
+      } else if (other === this.ridingPlatform) {
+        // 罕见：ridingPlatform 不是主支撑体 → 回退到主支撑
+        this.ridingPlatform = this.supportBody;
       }
     }
     if (label === 'pit') {
