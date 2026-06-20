@@ -94,7 +94,13 @@ export class EndScene extends Phaser.Scene {
         Registry.setLevel(state.level);
         Registry.setDifficulty(state.difficulty);
         Registry.setLevelRun(state.levelRun);
+        // 关 → 开：必须显式把 GameScene 拉起来。
+        // 不能只依赖 RoomScene/旧 GameScene 的 onStart 链路：
+        // Set 迭代时旧 GameScene 的 listener 在 scene.start('GameScene') 之后
+        // 触发的 isActive 判定可能因场景刚被 shutdown/START 而为 false，
+        // 链路一断 EndScene 又 stop 完自己，就只剩 HomeScene 在屏上卡住。
         this.scene.stop('EndScene');
+        this.scene.start('GameScene');
       });
     } else if (isWin && nextLevel) {
       this.createButton(cx - 170, btnY, 150, 58, 0x06d6a0, '下一关', '#000000', () => {
